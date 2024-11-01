@@ -1,18 +1,18 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/tls"
 	"fmt"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"gopkg.in/ini.v1"
+	"gopkg.in/natefinch/lumberjack.v2"
 	"io"
 	"io/ioutil"
-	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -21,7 +21,6 @@ import (
 )
 
 var (
-	lastLogDate      time.Time
 	totalFilesSent   int
 	totalBytesSent   int64
 	lastFileSentName string
@@ -43,10 +42,6 @@ var (
 	numWorkers int
 )
 
-const (
-	maxLogSize = 2 * 1024 * 1024 // 2 MB
-)
-
 func init() {
 	createConfigIfNotExists()
 	updateConfigIfNeeded()
@@ -54,7 +49,7 @@ func init() {
 	var err error
 	cfg, err := ini.Load("config.ini")
 	if err != nil {
-		log.Fatal("Error loading the config.ini file: ", err)
+		log.Error().Msg(fmt.Sprintf("error loading the config.ini file: %s", err))
 	}
 
 	useHTTPS, _ = cfg.Section("Server").Key("UseHTTPS").Bool()
@@ -85,7 +80,7 @@ func init() {
 
 func createConfigIfNotExists() {
 	if _, err := os.Stat("config.ini"); os.IsNotExist(err) {
-		log.Println("The config.ini file was not found. Creating a new configuration file.")
+		log.Info().Msg("The config.ini file was not found. Creating a new configuration file.")
 
 		cfg := ini.Empty()
 
@@ -109,10 +104,10 @@ func createConfigIfNotExists() {
 
 		err := cfg.SaveTo("config.ini")
 		if err != nil {
-			log.Fatal("Error creating the config.ini file: ", err)
+			log.Error().Msg(fmt.Sprintf("error creating the config.ini file: %s", err))
 		}
 
-		log.Println("The config.ini file was successfully created with default settings.")
+		log.Info().Msg("The config.ini file was successfully created with default settings.")
 	}
 }
 
@@ -120,7 +115,7 @@ func updateConfigIfNeeded() {
 	// Загружаем существующий файл конфигурации
 	cfg, err := ini.Load("config.ini")
 	if err != nil {
-		log.Fatalf("Error loading configuration: %v", err)
+		log.Error().Msg(fmt.Sprintf("error loading configuration: %v", err))
 	}
 
 	// Проверяем, существует ли секция [Server]
@@ -129,51 +124,51 @@ func updateConfigIfNeeded() {
 		// Если секция не существует, создаем ее
 		section, err = cfg.NewSection("Server")
 		if err != nil {
-			log.Fatalf("Error creating the [Server] section: %v", err)
+			log.Error().Msg(fmt.Sprintf("error creating the [Server] section: %v", err))
 		}
-		log.Println("Section [Server] created")
+		log.Info().Msg("Section [Server] created")
 	}
 
 	// Проверяем, существует ли ключ Host
 	if section.Key("Host").String() == "" {
 		// Если ключ не существует, устанавливаем значение по умолчанию
 		section.Key("Host").SetValue("transport.ipay.ua")
-		log.Println("Added value Host = transport.ipay.ua to the [Server] section")
+		log.Info().Msg("Added value Host = transport.ipay.ua to the [Server] section")
 	}
 
 	// Проверяем, существует ли ключ Port
 	if section.Key("Port").String() == "" {
 		// Если ключ не существует, устанавливаем значение по умолчанию
 		section.Key("Port").SetValue("14080")
-		log.Println("Added value Port = 14080 to the [Server] section")
+		log.Info().Msg("Added value Port = 14080 to the [Server] section")
 	}
 
 	// Проверяем, существует ли ключ Context
 	if section.Key("Context").String() == "" {
 		// Если ключ не существует, устанавливаем значение по умолчанию
 		section.Key("Context").SetValue("upload")
-		log.Println("Added value Context = upload to the [Server] section")
+		log.Info().Msg("Added value Context = upload to the [Server] section")
 	}
 
 	// Проверяем, существует ли ключ UseHTTPS
 	if section.Key("UseHTTPS").String() == "" {
 		// Если ключ не существует, устанавливаем значение по умолчанию
 		section.Key("UseHTTPS").SetValue("true")
-		log.Println("Added value UseHTTPS = true to the [Server] section")
+		log.Info().Msg("Added value UseHTTPS = true to the [Server] section")
 	}
 
 	// Проверяем, существует ли ключ CertFile
 	if section.Key("CertFile").String() == "" {
 		// Если ключ не существует, устанавливаем значение по умолчанию
 		section.Key("CertFile").SetValue("server.crt")
-		log.Println("Added value CertFile = server.crt to the [Server] section")
+		log.Info().Msg("Added value CertFile = server.crt to the [Server] section")
 	}
 
 	// Проверяем, существует ли ключ KeyFile
 	if section.Key("KeyFile").String() == "" {
 		// Если ключ не существует, устанавливаем значение по умолчанию
 		section.Key("KeyFile").SetValue("server.key")
-		log.Println("Added value KeyFile = server.key to the [Server] section")
+		log.Info().Msg("Added value KeyFile = server.key to the [Server] section")
 	}
 
 	// Проверяем, существует ли секция [Goroutines]
@@ -182,39 +177,64 @@ func updateConfigIfNeeded() {
 		// Если секция не существует, создаем ее
 		section, err = cfg.NewSection("Goroutines")
 		if err != nil {
-			log.Fatalf("Error creating the [Goroutines] section: %v", err)
+			log.Error().Msg(fmt.Sprintf("error creating the [Goroutines] section: %v", err))
 		}
-		log.Println("Section [Goroutines] created")
+		log.Info().Msg("Section [Goroutines] created")
 	}
 
 	// Проверяем, существует ли ключ numWorkers
 	if section.Key("numWorkers").String() == "" {
 		// Если ключ не существует, устанавливаем значение по умолчанию
 		section.Key("numWorkers").SetValue("8")
-		log.Println("Added value numWorkers = 8 to the [Goroutines] section")
+		log.Info().Msg("Added value numWorkers = 8 to the [Goroutines] section")
 	}
 
 	// Сохраняем изменения в конфигурации
 	err = cfg.SaveTo("config.ini")
 	if err != nil {
-		log.Fatalf("Error saving configuration: %v", err)
+		log.Error().Msg(fmt.Sprintf("error saving configuration: %v", err))
+	}
+}
+
+func createDirectories() {
+	dirs := []string{sendDir, archiveDir, logDir}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Error().Msg(fmt.Sprintf("error creating directory %s: %v", dir, err))
+		}
 	}
 }
 
 func main() {
 	createDirectories()
-	setupLogging()
-	logWithCheck(fmt.Sprint("Starting the file transfer program..."))
-	log.Printf("Server address in use: %s\n", serverAddr)
+
+	logFilePath := filepath.Join(logDir, logFile)
+	logWriter := &lumberjack.Logger{
+		Filename:   logFilePath, // Имя файла лога
+		MaxSize:    10,          // Максимальный размер файла в МБ
+		MaxBackups: 0,           // Максимальное количество резервных файлов
+		MaxAge:     0,           // Максимальный возраст резервных файлов в днях
+		Compress:   true,        // Сжимать резервные файлы
+	}
+
+	// Настройка вывода логов через lumberjack
+	log.Logger = log.Output(logWriter)
+
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+
+	log.Info().Msg("Starting the file transfer program...")
+	log.Info().Msg(fmt.Sprintf("Server address in use: %s", serverAddr))
 
 	// Create the file channel
 	fileChan := make(chan string)
+
+	go watchFiles(fileChan)
 
 	// // Start goroutines for sending files
 	// startSendGoroutines(5, fileChan) // Adjust the number of goroutines as needed
 
 	// Start goroutines for sending files
-	log.Printf("Запуск %d потоков\n", numWorkers)
+	log.Info().Msg(fmt.Sprintf("Запуск %d потоков", numWorkers))
 	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
@@ -226,7 +246,7 @@ func main() {
 
 	// Запись в лог при завершении программы
 	exitHandler := func() {
-		log.Println("Terminating the file transfer program...")
+		log.Info().Msg("Terminating the file transfer program...")
 		os.Exit(0)
 	}
 	c := make(chan os.Signal, 1)
@@ -236,152 +256,17 @@ func main() {
 		exitHandler()
 	}()
 
-	go watchFiles(fileChan)
-	select {} // Бесконечный цикл, чтобы программа не завершалась
-}
-
-func createDirectories() {
-	dirs := []string{sendDir, archiveDir, logDir}
-	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			log.Fatalf("Error creating directory %s: %v", dir, err)
-		}
-	}
-}
-
-func setupLogging() {
-	// Создаем директорию для логов, если она не существует
-	if _, err := os.Stat(logDir); os.IsNotExist(err) {
-		os.Mkdir(logDir, 0755)
-	}
-
-	// Проверяем, существует ли лог-файл
-	logFilePath := filepath.Join(logDir, logFile)
-	if _, err := os.Stat(logFilePath); err == nil {
-		// Лог-файл существует, проверяем его размер
-		fileInfo, err := os.Stat(logFilePath)
-		if err == nil && fileInfo.Size() > int64(maxLogSize) {
-			// Если размер больше 2 МБ, выполняем ротацию
-			rotateLogs(logFilePath, time.Now())
-		}
-	}
-
-	// Открываем новый лог-файл для записи
-	file, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		log.Fatal("Error opening the log file:", err)
-	}
-	log.SetOutput(file)
-}
-
-// Функция для проверки размера лог-файла и архивации
-func checkLogSizeAndRotate() {
-	logFilePath := filepath.Join(logDir, logFile)
-	fileInfo, err := os.Stat(logFilePath)
-	if err == nil && fileInfo.Size() > int64(maxLogSize) {
-		rotateLogs(logFilePath, time.Now())
-	}
-}
-
-// Функция для записи в лог с проверкой размера
-func logWithCheck(message string) {
-	checkLastRowAndRotateBeforeWrite() // Проверяем последнюю строку перед записью
-	log.Println(message)
-	checkLogSizeAndRotate() // Проверяем размер после записи
-}
-
-// Функция для проверки даты последнего сообщения в лог-файле перед записью
-func checkLastRowAndRotateBeforeWrite() {
-	logFilePath := filepath.Join(logDir, logFile)
-	lines, err := readLastLines(logFilePath, 2)
-	if err == nil && len(lines) > 0 {
-		lastLine := lines[len(lines)-1]
-		logDate, err := time.Parse("2006/01/02 15:04:05", lastLine[:19])
-		if err == nil && logDate.Before(time.Now().Truncate(24*time.Hour)) {
-			// Дата последней записи меньше текущей, выполняем ротацию
-			rotateLogs(logFilePath, logDate)
-		}
-	}
-}
-
-// Функция для ротации логов
-func rotateLogs(logFilePath string, logDate time.Time) {
-	// Создаем директорию для старых логов
-	oldLogDir := filepath.Join(logDir, logDate.Format("2006-01-02"))
-	os.MkdirAll(oldLogDir, 0755)
-
-	// Перемещаем старый лог-файл
-	archivedLogPath := filepath.Join(oldLogDir, logFile)
-	err := os.Rename(logFilePath, archivedLogPath)
-	if err != nil {
-		log.Println("Error moving the log file:", err)
-		return
-	}
-
-	// Определяем имя архива
-	baseTarFileName := logDate.Format("2006-01-02")
-	tarFileName := filepath.Join(oldLogDir, fmt.Sprintf("%s-1.tar.gz", baseTarFileName))
-
-	// Проверяем существование архива и увеличиваем номер, если необходимо
-	n := 1
-	for {
-		if _, err := os.Stat(tarFileName); os.IsNotExist(err) {
-			break // Файл не существует, можно использовать это имя
-		}
-		n++
-		tarFileName = filepath.Join(oldLogDir, fmt.Sprintf("%s-%d.tar.gz", baseTarFileName, n))
-	}
-
-	// Архивируем лог-файл
-	cmd := exec.Command("tar", "-czf", tarFileName, "-C", oldLogDir, logFile)
-	if err := cmd.Run(); err != nil {
-		log.Println("Error archiving logs:", err)
-		return
-	}
-
-	// Удаляем старый лог-файл после успешного архивирования
-	os.Remove(archivedLogPath)
-	log.Println("Logs successfully archived to:", tarFileName)
-
-	// Инициализация нового лога
-	setupLogging()
-}
-
-func readLastLines(filePath string, n int) ([]string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-		if len(lines) > n {
-			lines = lines[1:] // Удаляем старые строки, если их больше n
-		}
-	}
-	return lines, scanner.Err()
-}
-
-// Функция для обработки отправки файлов
-func sendFileWorker(fileChan <-chan string) {
-	for filePath := range fileChan {
-		err := sendFile(filePath)
-		if err != nil {
-			log.Println("Error sending the file:", err)
-		}
-	}
+	wg.Wait()
+	//select {} // Бесконечный цикл, чтобы программа не завершалась
 }
 
 // Изменяем функцию watchFiles для отправки файлов в канал
 func watchFiles(fileChan chan<- string) {
-	log.Println("Starting to monitor the folder:", sendDir)
+	log.Info().Msg(fmt.Sprintf("Start monitoring folder: %s", sendDir))
 	for {
 		files, err := os.ReadDir(sendDir)
 		if err != nil {
-			log.Println("Error reading the directory:", err)
+			log.Info().Msg(fmt.Sprintf("error reading the directory: %s", err))
 			time.Sleep(1 * time.Second)
 			continue
 		}
@@ -396,15 +281,15 @@ func watchFiles(fileChan chan<- string) {
 				fileMutex.Lock()
 				if _, exists := fileFirstSeen[filePath]; !exists {
 					fileFirstSeen[filePath] = time.Now()
-					logWithCheck(fmt.Sprintf("New file detected: %s", filePath))
+					log.Info().Msg(fmt.Sprintf("New file detected: %s", filePath))
 				}
 				fileMutex.Unlock()
 
 				if isFileUnchanged(filePath) {
-					log.Printf("The file %s has not been modified for more than 10 seconds. Sending...\n", filePath)
+					log.Info().Msg(fmt.Sprintf("The file %s has not been modified for more than 10 seconds. Sending...", filePath))
 					fileChan <- filePath // Отправляем файл в канал
 				} else {
-					log.Printf("The file %s is not yet ready for sending\n", filePath)
+					log.Info().Msg(fmt.Sprintf("The file %s is not ready for sending yet", filePath))
 				}
 			}
 		}
@@ -414,7 +299,7 @@ func watchFiles(fileChan chan<- string) {
 		for filePath := range fileFirstSeen {
 			if !currentFiles[filePath] {
 				delete(fileFirstSeen, filePath)
-				log.Printf("The file has been removed from tracking: %s\n", filePath)
+				log.Info().Msg(fmt.Sprintf("The file has been removed from tracking: %s", filePath))
 			}
 		}
 		fileMutex.Unlock()
@@ -434,20 +319,32 @@ func isFileUnchanged(filePath string) bool {
 	return time.Since(firstSeen) > 2*time.Second
 }
 
+// Функция для обработки отправки файлов
+func sendFileWorker(fileChan <-chan string) {
+	for filePath := range fileChan {
+		err := sendFile(filePath)
+		if err != nil {
+			log.Error().Msg(fmt.Sprintf("error sending the file: %s", err))
+		}
+	}
+}
+
 func sendFile(filePath string) error {
-	log.Printf("Starting file transfer: %s", filePath)
+	log.Info().Msg(fmt.Sprintf("Starting file transfer: %s", filePath))
 
 	// Проверка существования файла перед его открытием
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return fmt.Errorf("File does not exist: %s", filePath)
+		return fmt.Errorf("file does not exist: %s", filePath)
 	}
 
 	file, err := os.Open(filePath)
 	if err != nil {
-		log.Printf("Error opening the file: %v", err)
-		return fmt.Errorf("Error opening the file: %v", err)
+		log.Error().Msg(fmt.Sprintf("error opening the file: %v", err))
+		return fmt.Errorf("error opening the file: %v", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
 
 	// Создаем новый запрос
 	var buf bytes.Buffer
@@ -455,19 +352,19 @@ func sendFile(filePath string) error {
 
 	part, err := writer.CreateFormFile("file", filepath.Base(file.Name()))
 	if err != nil {
-		log.Printf("Error creating the file form: %v", err)
-		return fmt.Errorf("Error creating the file form: %v", err)
+		log.Error().Msg(fmt.Sprintf("error creating the file form: %v", err))
+		return fmt.Errorf("error creating the file form: %v", err)
 	}
 
 	if _, err = io.Copy(part, file); err != nil {
-		log.Printf("Error copying the file to the form: %v", err)
-		return fmt.Errorf("Error copying the file to the form: %v", err)
+		log.Error().Msg(fmt.Sprintf("error copying the file to the form: %v", err))
+		return fmt.Errorf("error copying the file to the form: %v", err)
 	}
 
 	err = writer.Close()
 	if err != nil {
-		log.Printf("Error closing the writer: %v", err)
-		return fmt.Errorf("Error closing the writer: %v", err)
+		log.Error().Msg(fmt.Sprintf("Error closing the writer: %v", err))
+		return fmt.Errorf("error closing the writer: %v", err)
 	}
 
 	// Создаем HTTP-клиент с настроенным TLS
@@ -483,8 +380,8 @@ func sendFile(filePath string) error {
 
 	req, err := http.NewRequest(http.MethodPost, serverAddr, &buf)
 	if err != nil {
-		log.Printf("Error creating the request: %v", err)
-		return fmt.Errorf("Error creating the request: %v", err)
+		log.Error().Msg(fmt.Sprintf("Error creating the request: %v", err))
+		return fmt.Errorf("error creating the request: %v", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
@@ -493,18 +390,18 @@ func sendFile(filePath string) error {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("Error sending the request: %v", err)
-		return fmt.Errorf("Error sending the request: %v", err)
+		log.Error().Msg(fmt.Sprintf("error sending the request: %v", err))
+		return fmt.Errorf("error sending the request: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := ioutil.ReadAll(resp.Body)
-		log.Printf("Error receiving response from the server: %s - %s", resp.Status, body)
-		return fmt.Errorf("Error receiving response from the server: %s - %s", resp.Status, body)
+		log.Error().Msg(fmt.Sprintf("error receiving response from server: %s - %s", resp.Status, body))
+		return fmt.Errorf("error receiving response from server: %s - %s", resp.Status, body)
 	}
 
-	log.Printf("Successful connection: %s/ -%s- %s", serverAddr, http.MethodPost, resp.Status) // Логирование успешного соединения
+	log.Info().Msg(fmt.Sprintf("Successful connection: %s/ -%s- %s", serverAddr, http.MethodPost, resp.Status)) // Логирование успешного соединения
 
 	// Обновление статистики
 	fileInfo, err := os.Stat(filePath)
@@ -518,13 +415,13 @@ func sendFile(filePath string) error {
 		fmt.Printf("File successfully sent: %s | Number of files sent: %d | Total size: %.2f MB | Last file: %s at %s\n",
 			lastFileSentName, totalFilesSent, totalBytesSentMB, lastFileSentName, lastFileSentTime.Format(time.RFC3339))
 	} else {
-		log.Printf("Error getting file info: %v", err)
+		log.Error().Msg(fmt.Sprintf("error getting file info: %v", err))
 	}
 	// Закрытие файла перед перемещением
 	err = file.Close()
 	if err != nil {
-		log.Println("Error closing file:", err)
-		return fmt.Errorf("Error closing file")
+		log.Error().Msg(fmt.Sprintf("error closing file: %s", err))
+		return fmt.Errorf("error closing file")
 	}
 
 	// Перемещение файла в архив после успешной отправки
@@ -540,7 +437,7 @@ func moveToArchive(filePath string) {
 	// Проверка и создание директории
 	if _, err := os.Stat(destDir); os.IsNotExist(err) {
 		if err := os.MkdirAll(destDir, 0755); err != nil {
-			log.Println("Error creating directory:", err)
+			log.Error().Msg(fmt.Sprintf("error creating directory: %s", err))
 			return
 		}
 	}
@@ -561,10 +458,10 @@ func moveToArchive(filePath string) {
 
 	err := os.Rename(filePath, destPath)
 	if err != nil {
-		log.Println("Error moving file to archive:", err)
+		log.Error().Msg(fmt.Sprintf("error moving file to archive: %s", err))
 		return
 	}
 
-	logWithCheck(fmt.Sprintf("File moved to archive: %s", destPath))
+	log.Info().Msg(fmt.Sprintf("File moved to archive: %s", destPath))
 
 }
