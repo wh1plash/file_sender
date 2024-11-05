@@ -234,7 +234,7 @@ func main() {
 	// startSendGoroutines(5, fileChan) // Adjust the number of goroutines as needed
 
 	// Start goroutines for sending files
-	log.Info().Msg(fmt.Sprintf("Запуск %d потоков", numWorkers))
+	log.Info().Msg(fmt.Sprintf("Starting with %d chanals", numWorkers))
 	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
