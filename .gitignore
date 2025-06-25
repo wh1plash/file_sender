@@ -1,0 +1,6 @@
+config_local.ini
+sender
+sender.exe
+/logs
+/send
+/archive
